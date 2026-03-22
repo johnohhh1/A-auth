@@ -24,7 +24,11 @@
       "adaptiveIcon": {
         "backgroundColor": "#0a0a0a",
         "foregroundImage": "./assets/adaptive-icon.png"
-      }
+      },
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
     },
     "plugins": [
       "expo-secure-store",
@@ -42,8 +46,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "FILL_IN_AFTER_EAS_INIT"
-      }
+        "projectId": "a8cfea40-7c8d-4fe0-aa94-9fd376f439e8"
+      },
+      "router": {}
     }
   }
 }
