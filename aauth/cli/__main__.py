@@ -26,9 +26,18 @@ def _post(path: str, data: dict) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
-            return json.loads(resp.read())
+            try:
+                return json.loads(resp.read())
+            except json.JSONDecodeError:
+                print("Error: daemon returned malformed response", file=sys.stderr)
+                sys.exit(1)
     except urllib.error.HTTPError as e:
-        return json.loads(e.read())
+        try:
+            return json.loads(e.read())
+        except json.JSONDecodeError:
+            print(f"Error: daemon returned malformed error response (HTTP {e.code})",
+                  file=sys.stderr)
+            sys.exit(1)
     except urllib.error.URLError:
         print("Error: A-Auth daemon is not running. Start it with: aauth daemon start")
         sys.exit(1)
@@ -38,9 +47,18 @@ def _get(path: str) -> dict:
     req = urllib.request.Request(BASE_URL + path)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+            try:
+                return json.loads(resp.read())
+            except json.JSONDecodeError:
+                print("Error: daemon returned malformed response", file=sys.stderr)
+                sys.exit(1)
     except urllib.error.HTTPError as e:
-        return json.loads(e.read())
+        try:
+            return json.loads(e.read())
+        except json.JSONDecodeError:
+            print(f"Error: daemon returned malformed error response (HTTP {e.code})",
+                  file=sys.stderr)
+            sys.exit(1)
     except urllib.error.URLError:
         print("Error: A-Auth daemon is not running. Start it with: aauth daemon start")
         sys.exit(1)

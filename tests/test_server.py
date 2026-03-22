@@ -1,15 +1,17 @@
 """Integration tests for the A-Auth HTTP daemon."""
 
+import concurrent.futures
 import json
 import threading
 import time
 import urllib.request
 import urllib.error
+from unittest.mock import patch
 import pytest
 
 import aauth.db.registry as reg
 from aauth.daemon.server import AAuthHandler, DEFAULT_PORT
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 
 
 TEST_PORT = 17437  # offset to avoid conflicts
@@ -27,9 +29,9 @@ def temp_db(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def server():
-    """Start a test HTTP server on TEST_PORT for the module."""
+    """Start a threaded test HTTP server on TEST_PORT for the module."""
     reg.init_db()
-    httpd = HTTPServer(("127.0.0.1", TEST_PORT), AAuthHandler)
+    httpd = ThreadingHTTPServer(("127.0.0.1", TEST_PORT), AAuthHandler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     time.sleep(0.1)  # let it bind
@@ -185,3 +187,84 @@ def test_agent_tokens(server):
 def test_404(server):
     status, data = get(server, "/nonexistent")
     assert status == 404
+
+
+# ------------------------------------------------------------------ new tests
+
+
+def test_malformed_json_body(server):
+    """_read_body returns 400 on malformed JSON instead of silently passing {}."""
+    raw = urllib.request.Request(
+        server + "/agents/register",
+        data=b"not valid json {{{",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(raw, timeout=5) as r:
+            status, data = r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        status, data = e.code, json.loads(e.read())
+    assert status == 400
+    assert "invalid JSON body" in data.get("error", "")
+
+
+def test_validate_expired_token(server):
+    """validate_token returns False and reason='token expired' for an expired token."""
+    post(server, "/agents/register", {
+        "agent_id": "expire-bot", "name": "Expire Bot", "description": ""
+    })
+    tok = reg.mint_token("expire-bot", "gmail", "read", "time_window", 1)
+    time.sleep(1.1)  # let the 1-second TTL expire
+
+    status, data = post(server, "/validate", {
+        "token": tok.token,
+        "service": "gmail",
+        "action": "read",
+    })
+    assert status == 403
+    assert data["valid"] is False
+    assert "expired" in data.get("reason", "")
+
+
+def test_concurrent_requests_all_succeed(server):
+    """Multiple concurrent /request calls all get tokens when approval is mocked."""
+    post(server, "/agents/register", {
+        "agent_id": "concurrent-bot", "name": "Concurrent Bot", "description": ""
+    })
+
+    def make_request(_):
+        return post(server, "/request", {
+            "agent_id": "concurrent-bot",
+            "service": "gmail",
+            "action": "read",
+            "scope": "one_shot",
+            "ttl_seconds": 0,
+        })
+
+    with patch("aauth.daemon.server.prompt_approval", return_value=(True, None)):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            results = list(executor.map(make_request, range(3)))
+
+    for status, data in results:
+        assert status == 200, f"Expected 200, got {status}: {data}"
+        assert "token" in data
+
+
+def test_approval_timeout_returns_denied(server):
+    """When _timed_input returns None (timeout), the /request returns 403 denied."""
+    post(server, "/agents/register", {
+        "agent_id": "timeout-bot", "name": "Timeout Bot", "description": ""
+    })
+
+    with patch("aauth.daemon.server.prompt_approval", return_value=(False, None)):
+        status, data = post(server, "/request", {
+            "agent_id": "timeout-bot",
+            "service": "gmail",
+            "action": "read",
+            "scope": "one_shot",
+            "ttl_seconds": 0,
+        })
+
+    assert status == 403
+    assert "denied" in data.get("error", "")

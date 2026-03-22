@@ -3,7 +3,7 @@
 import json
 import time
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -12,6 +12,9 @@ from aauth.daemon.notify import prompt_approval
 
 DEFAULT_PORT = 7437  # AAUT in leet — memorable
 
+# Serializes approval prompts so only one fires at a time.
+# Without this, concurrent agent requests would interleave TTY output.
+_approval_lock = threading.Lock()
 
 # Pending requests: token -> (event, result)
 _pending: dict[str, tuple[threading.Event, dict]] = {}
@@ -42,6 +45,9 @@ class AAuthHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         body = self._read_body()
+        if body is None:
+            self._json(400, {"error": "invalid JSON body"})
+            return
 
         if path == "/agents/register":
             self._handle_register(body)
@@ -112,17 +118,17 @@ class AAuthHandler(BaseHTTPRequestHandler):
 
         registry.touch_agent(agent_id)
 
-        # Approval prompt runs synchronously on the daemon thread.
-        # For a production daemon this should be async / queue-based,
-        # but for v0.1 single-user use this is fine.
-        approved, scope_override = prompt_approval(
-            agent_id=agent_id,
-            agent_name=agent.name,
-            service=service,
-            action=action,
-            scope=scope,
-            ttl_seconds=ttl_seconds,
-        )
+        # Serialize approval prompts — only one fires at a time so TTY output
+        # and stdin reads from concurrent requests don't interleave.
+        with _approval_lock:
+            approved, scope_override = prompt_approval(
+                agent_id=agent_id,
+                agent_name=agent.name,
+                service=service,
+                action=action,
+                scope=scope,
+                ttl_seconds=ttl_seconds,
+            )
 
         if not approved:
             registry.log_activity(agent_id, service, action, None, "denied")
@@ -201,7 +207,7 @@ class AAuthHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ helpers
 
-    def _read_body(self) -> dict:
+    def _read_body(self) -> dict | None:
         length = int(self.headers.get("Content-Length", 0))
         if length == 0:
             return {}
@@ -209,7 +215,7 @@ class AAuthHandler(BaseHTTPRequestHandler):
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            return {}
+            return None
 
     def _json(self, status: int, data: Any) -> None:
         body = json.dumps(data).encode()
@@ -226,7 +232,7 @@ def _default_ttl(scope: str) -> int:
 
 def run(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> None:
     registry.init_db()
-    server = HTTPServer((host, port), AAuthHandler)
+    server = ThreadingHTTPServer((host, port), AAuthHandler)
     print(f"A-Auth daemon running on {host}:{port}")
     print(f"Registry: {registry.DB_PATH}")
     print("Ctrl-C to stop.\n")

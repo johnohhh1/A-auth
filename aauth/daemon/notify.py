@@ -1,9 +1,9 @@
 """Desktop notification approval gate."""
 
+import select
 import subprocess
 import sys
 import time
-import threading
 from typing import Optional
 
 
@@ -65,7 +65,7 @@ def prompt_approval(
     print(f"  Timeout: {timeout}s", flush=True)
     print(f"  > ", end="", flush=True)
 
-    answer = _timed_input(timeout)
+    answer = _timed_input(timeout)  # blocks until input or timeout
     if answer is None:
         print("(timed out — denied)", flush=True)
         return False, None
@@ -89,26 +89,19 @@ def prompt_approval(
 
 
 def _timed_input(timeout: int) -> Optional[str]:
-    """Read a line from stdin with a timeout. Returns None on timeout."""
-    result = [None]
-    timed_out = [False]
+    """Read a line from stdin with a timeout. Returns None on timeout.
 
-    def reader():
+    Uses select.select to avoid spawning a thread that outlives the timeout
+    and races with the next prompt's stdin reader.
+    """
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    if ready:
         try:
-            result[0] = input()
+            return sys.stdin.readline().strip()
         except EOFError:
-            result[0] = ""
-
-    t = threading.Thread(target=reader, daemon=True)
-    t.start()
-    t.join(timeout)
-
-    if t.is_alive():
-        timed_out[0] = True
-        print()  # newline after timeout
-        return None
-
-    return result[0]
+            return ""
+    print()  # newline after timeout
+    return None
 
 
 def _ttl_label(scope: str, ttl_seconds: int) -> str:

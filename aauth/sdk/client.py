@@ -2,6 +2,7 @@
 
 import json
 import time
+import warnings
 import urllib.request
 import urllib.error
 from contextlib import contextmanager
@@ -150,9 +151,17 @@ class AAuth:
         )
         try:
             with urllib.request.urlopen(req, timeout=90) as resp:
-                return json.loads(resp.read())
+                try:
+                    return json.loads(resp.read())
+                except json.JSONDecodeError as e:
+                    raise AAuthError(f"Daemon returned malformed JSON: {e}") from e
         except urllib.error.HTTPError as e:
-            return json.loads(e.read())
+            try:
+                return json.loads(e.read())
+            except json.JSONDecodeError:
+                raise AAuthError(
+                    f"Daemon returned malformed error response (HTTP {e.code})"
+                ) from e
         except urllib.error.URLError as e:
             raise AAuthError(
                 f"Cannot connect to A-Auth daemon at {self.base_url}. "
@@ -190,11 +199,20 @@ class TaskSession:
         return token
 
     def _revoke_all(self) -> None:
+        errors = []
         for token in self._tokens:
             try:
                 self._client.consume(token)
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            msg = (
+                f"A-Auth: {len(errors)} token(s) failed to revoke for agent "
+                f"{self.agent_id!r}. Tokens may still be active. "
+                f"First error: {errors[0]}"
+            )
+            warnings.warn(msg)
+            raise errors[0]
 
 
 class PermissionChain:
@@ -223,8 +241,17 @@ class PermissionChain:
         return self
 
     def __exit__(self, *args):
+        errors = []
         for token in self.tokens.values():
             try:
                 self._client.consume(token)
-            except Exception:
-                pass
+            except Exception as e:
+                errors.append(e)
+        if errors:
+            msg = (
+                f"A-Auth: {len(errors)} token(s) failed to consume in PermissionChain "
+                f"for agent {self.agent_id!r}. Tokens may still be active. "
+                f"First error: {errors[0]}"
+            )
+            warnings.warn(msg)
+            raise errors[0]
