@@ -16,7 +16,8 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.johnohhh1.aauth",
       "infoPlist": {
-        "NSFaceIDUsageDescription": "A-Auth uses Face ID to confirm your identity before approving agent access requests."
+        "NSFaceIDUsageDescription": "A-Auth uses Face ID to confirm your identity before approving agent access requests.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
