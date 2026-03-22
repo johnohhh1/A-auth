@@ -1,6 +1,7 @@
 """A-Auth daemon — HTTP server that handles agent permission requests."""
 
 import json
+import secrets
 import time
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -9,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 
 from aauth.db import registry
 from aauth.daemon.notify import prompt_approval
+from aauth.daemon.push import send_push
 
 DEFAULT_PORT = 7437  # AAUT in leet — memorable
 
@@ -16,9 +18,25 @@ DEFAULT_PORT = 7437  # AAUT in leet — memorable
 # Without this, concurrent agent requests would interleave TTY output.
 _approval_lock = threading.Lock()
 
-# Pending requests: token -> (event, result)
-_pending: dict[str, tuple[threading.Event, dict]] = {}
-_pending_lock = threading.Lock()
+# Phone registration: one phone per daemon instance (v0.1).
+# { "expo_token": str, "device_name": str }
+_phone: dict | None = None
+_phone_lock = threading.Lock()
+
+# Pending mobile approvals: request_id -> {"event": Event, "approved": bool | None}
+#
+#   PENDING REQUEST LIFECYCLE
+#
+#   agent                daemon               phone
+#     |                    |                    |
+#     |-- POST /request --> |                    |
+#     |                    |-- push notif -----> |
+#     |                    |  (blocks here)      |
+#     |                    | <-- POST /requests/{id}/respond --|
+#     |<-- token or 403 ---|                    |
+#
+_pending_mobile: dict[str, dict] = {}
+_pending_mobile_lock = threading.Lock()
 
 
 class AAuthHandler(BaseHTTPRequestHandler):
@@ -39,6 +57,10 @@ class AAuthHandler(BaseHTTPRequestHandler):
             self._handle_agent_tokens(agent_id)
         elif path == "/activity":
             self._handle_activity()
+        elif path == "/requests/pending":
+            self._handle_pending_requests()
+        elif path == "/phone":
+            self._handle_phone_status()
         else:
             self._json(404, {"error": "not found"})
 
@@ -63,6 +85,13 @@ class AAuthHandler(BaseHTTPRequestHandler):
         elif path.startswith("/agents/") and path.endswith("/deregister"):
             agent_id = path.split("/")[2]
             self._handle_deregister(agent_id)
+        elif path == "/phone/register":
+            self._handle_phone_register(body)
+        elif path == "/phone/unregister":
+            self._handle_phone_unregister()
+        elif path.startswith("/requests/") and path.endswith("/respond"):
+            request_id = path.split("/")[2]
+            self._handle_respond(request_id, body)
         else:
             self._json(404, {"error": "not found"})
 
@@ -118,24 +147,31 @@ class AAuthHandler(BaseHTTPRequestHandler):
 
         registry.touch_agent(agent_id)
 
-        # Serialize approval prompts — only one fires at a time so TTY output
-        # and stdin reads from concurrent requests don't interleave.
-        with _approval_lock:
-            approved, scope_override = prompt_approval(
-                agent_id=agent_id,
-                agent_name=agent.name,
-                service=service,
-                action=action,
-                scope=scope,
-                ttl_seconds=ttl_seconds,
+        # Route to mobile approval if a phone is paired, otherwise TTY.
+        with _phone_lock:
+            phone = _phone.copy() if _phone else None
+
+        if phone:
+            approved, scope_override = self._mobile_approval(
+                phone, agent_id, agent.name, service, action, scope, ttl_seconds
             )
+        else:
+            # Serialize TTY prompts — only one fires at a time.
+            with _approval_lock:
+                approved, scope_override = prompt_approval(
+                    agent_id=agent_id,
+                    agent_name=agent.name,
+                    service=service,
+                    action=action,
+                    scope=scope,
+                    ttl_seconds=ttl_seconds,
+                )
 
         if not approved:
             registry.log_activity(agent_id, service, action, None, "denied")
             self._json(403, {"error": "request denied by user"})
             return
 
-        # Apply scope override if user picked a different TTL at prompt time
         if scope_override:
             parts = scope_override.split(":")
             scope = parts[0]
@@ -150,6 +186,124 @@ class AAuthHandler(BaseHTTPRequestHandler):
             "ttl_seconds": ttl_seconds,
             "expires_at": tok.expires_at,
         })
+
+    def _mobile_approval(
+        self,
+        phone: dict,
+        agent_id: str,
+        agent_name: str,
+        service: str,
+        action: str,
+        scope: str,
+        ttl_seconds: int,
+        timeout: int = 60,
+    ) -> tuple[bool, str | None]:
+        """
+        Send a push notification and block until the phone responds or timeout.
+
+        Returns (approved, scope_override) — same shape as prompt_approval().
+        """
+        request_id = secrets.token_urlsafe(12)
+        event = threading.Event()
+        entry: dict = {"event": event, "approved": None, "scope_override": None,
+                       "agent_id": agent_id, "agent_name": agent_name,
+                       "service": service, "action": action, "scope": scope,
+                       "ttl_seconds": ttl_seconds, "created_at": time.time()}
+
+        with _pending_mobile_lock:
+            _pending_mobile[request_id] = entry
+
+        try:
+            send_push(
+                expo_token=phone["expo_token"],
+                title=f"{agent_name} requests access",
+                body=f"{service} · {action}",
+                data={
+                    "request_id": request_id,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "service": service,
+                    "action": action,
+                    "scope": scope,
+                },
+            )
+
+            event.wait(timeout=timeout)
+
+            approved = entry.get("approved")
+            if approved is None:
+                return False, None  # timed out
+            return bool(approved), entry.get("scope_override")
+        finally:
+            with _pending_mobile_lock:
+                _pending_mobile.pop(request_id, None)
+
+    def _handle_respond(self, request_id: str, body: dict) -> None:
+        with _pending_mobile_lock:
+            entry = _pending_mobile.get(request_id)
+
+        if not entry:
+            self._json(404, {"error": "request not found or already resolved"})
+            return
+
+        approved = body.get("approved")
+        if approved is None:
+            self._json(400, {"error": "approved (bool) is required"})
+            return
+
+        entry["approved"] = bool(approved)
+        entry["scope_override"] = body.get("scope_override")
+        entry["event"].set()
+        self._json(200, {"ok": True})
+
+    def _handle_pending_requests(self) -> None:
+        now = time.time()
+        with _pending_mobile_lock:
+            pending = [
+                {
+                    "request_id": rid,
+                    "agent_id": e["agent_id"],
+                    "agent_name": e["agent_name"],
+                    "service": e["service"],
+                    "action": e["action"],
+                    "scope": e["scope"],
+                    "created_at": e["created_at"],
+                    "expires_in": max(0, 60 - int(now - e["created_at"])),
+                }
+                for rid, e in _pending_mobile.items()
+            ]
+        self._json(200, {"pending": pending})
+
+    def _handle_phone_register(self, body: dict) -> None:
+        global _phone
+        expo_token = body.get("expo_token", "").strip()
+        device_name = body.get("device_name", "unknown").strip()
+
+        if not expo_token:
+            self._json(400, {"error": "expo_token is required"})
+            return
+
+        with _phone_lock:
+            _phone = {"expo_token": expo_token, "device_name": device_name}
+
+        print(f"\n📱 Phone paired: {device_name}", flush=True)
+        self._json(200, {"paired": True, "device_name": device_name})
+
+    def _handle_phone_unregister(self) -> None:
+        global _phone
+        with _phone_lock:
+            name = _phone["device_name"] if _phone else None
+            _phone = None
+        if name:
+            print(f"\n📱 Phone unpaired: {name}", flush=True)
+        self._json(200, {"unpaired": True})
+
+    def _handle_phone_status(self) -> None:
+        with _phone_lock:
+            if _phone:
+                self._json(200, {"paired": True, "device_name": _phone["device_name"]})
+            else:
+                self._json(200, {"paired": False})
 
     def _handle_validate(self, body: dict) -> None:
         token = body.get("token", "").strip()
@@ -189,7 +343,7 @@ class AAuthHandler(BaseHTTPRequestHandler):
         tokens = registry.get_active_tokens(agent_id)
         self._json(200, {"tokens": [
             {
-                "token": t.token[:12] + "...",  # partial for display
+                "token": t.token[:12] + "...",
                 "service": t.service,
                 "action": t.action,
                 "scope": t.scope,

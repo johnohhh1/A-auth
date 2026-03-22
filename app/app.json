@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "A-Auth",
+    "slug": "a-auth",
+    "version": "0.1.0",
+    "owner": "johnohhh1",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.johnohhh1.aauth",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "A-Auth uses Face ID to confirm your identity before approving agent access requests."
+      }
+    },
+    "android": {
+      "package": "com.johnohhh1.aauth",
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0a0a",
+        "foregroundImage": "./assets/adaptive-icon.png"
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-local-authentication",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#0a0a0a",
+          "androidMode": "default",
+          "androidCollapsedTitle": "A-Auth approval request"
+        }
+      ],
+      "expo-router"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "FILL_IN_AFTER_EAS_INIT"
+      }
+    }
+  }
+}
