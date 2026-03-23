@@ -384,7 +384,7 @@ def _default_ttl(scope: str) -> int:
     return {"one_shot": 0, "time_window": 900, "task": 14400}.get(scope, 0)
 
 
-def run(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> None:
+def run(host: str = "0.0.0.0", port: int = DEFAULT_PORT) -> None:
     registry.init_db()
     server = ThreadingHTTPServer((host, port), AAuthHandler)
     print(f"A-Auth daemon running on {host}:{port}")

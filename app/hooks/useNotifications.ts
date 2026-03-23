@@ -91,6 +91,8 @@ async function registerForPushNotifications(): Promise<string | null> {
     return null;
   }
 
-  const token = (await Notifications.getExpoPushTokenAsync()).data;
+  const token = (await Notifications.getExpoPushTokenAsync({
+    projectId: 'a8cfea40-7c8d-4fe0-aa94-9fd376f439e8',
+  })).data;
   return token;
 }
