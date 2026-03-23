@@ -87,7 +87,7 @@ function EmptyPairedScreen({ onRefresh, refreshing }: { onRefresh: () => void; r
 
       <View style={styles.testBox}>
         <Text style={styles.testHeading}>Test it now</Text>
-        <Text style={styles.testCode}>{'python3 -c "\nimport aauth\nwith aauth.PermissionChain(\n  agent_id=\'test-agent\',\n  agent_name=\'Test\'\n) as chain:\n  token = chain.request(\n    service=\'github\',\n    action=\'read\',\n  )\n  print(\'approved:\', token)\n"'}</Text>
+        <Text style={styles.testCode}>{'from aauth.sdk.client import AAuth\naa = AAuth(agent_id="test-agent")\ntoken = aa.request("github", "read")\nprint("approved:", token)'}</Text>
         <Text style={styles.testHint}>Run this on your computer — your phone will buzz.</Text>
       </View>
     </ScrollView>
