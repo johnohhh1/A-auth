@@ -1,15 +1,8 @@
-/**
- * Pairing screen.
- *
- * User enters the daemon's Tailscale IP. App verifies /health,
- * registers the Expo push token with the daemon, and navigates home.
- */
-
 import { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ActivityIndicator, KeyboardAvoidingView,
-  Platform, Alert,
+  Platform, ScrollView,
 } from 'react-native';
 import { router } from 'expo-router';
 import * as Device from 'expo-device';
@@ -20,79 +13,109 @@ import { useNotifications } from '../hooks/useNotifications';
 export default function PairScreen() {
   const [ip, setIp] = useState('');
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'checking' | 'registering'>('idle');
   const [error, setError] = useState<string | null>(null);
   const { expoPushToken, permissionGranted } = useNotifications();
 
   const handlePair = async () => {
     setError(null);
     const raw = ip.trim();
-    if (!raw) { setError('Enter the daemon IP address'); return; }
+    if (!raw) { setError('Enter your Tailscale IP address'); return; }
 
-    // Accept bare IP or full URL
     const url = raw.startsWith('http') ? raw : `http://${raw}:7437`;
 
     setLoading(true);
+    setStatus('checking');
     try {
       await saveDaemonUrl(url);
-
       const healthy = await checkHealth();
       if (!healthy) {
-        setError(`Can't reach daemon at ${url}\nIs it running? Is Tailscale connected?`);
+        setError(
+          `Can't reach the daemon at ${url}\n\n` +
+          `Check that:\n` +
+          `• aauth daemon is running on your computer\n` +
+          `• Tailscale is connected on both devices\n` +
+          `• The IP is correct (run tailscale ip -4)`
+        );
         setLoading(false);
+        setStatus('idle');
         return;
       }
 
-      if (!expoPushToken) {
-        if (!permissionGranted) {
-          Alert.alert(
-            'Notifications disabled',
-            'A-Auth needs notification permission to alert you when an agent requests access. Enable it in Settings, then pair again.',
-            [{ text: 'OK' }]
-          );
-        }
-        // Pair anyway — phone will poll for pending requests on focus
-        router.replace('/');
-        return;
+      if (expoPushToken) {
+        setStatus('registering');
+        const deviceName = Device.deviceName ?? Device.modelName ?? 'Android';
+        await registerPhone(expoPushToken, deviceName);
       }
-
-      const deviceName = Device.deviceName ?? Device.modelName ?? 'iPhone';
-      await registerPhone(expoPushToken, deviceName);
 
       router.replace('/');
     } catch (e: any) {
-      setError(e?.message ?? 'Pairing failed');
+      setError(e?.message ?? 'Pairing failed. Try again.');
     } finally {
       setLoading(false);
+      setStatus('idle');
     }
   };
+
+  const statusLabel = {
+    idle: 'Pair →',
+    checking: 'Reaching daemon…',
+    registering: 'Registering phone…',
+  }[status];
 
   return (
     <KeyboardAvoidingView
       style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={styles.inner}>
-        <Text style={styles.heading}>Pair with your daemon</Text>
+      <ScrollView contentContainerStyle={styles.inner} keyboardShouldPersistTaps="handled">
+
+        <Text style={styles.heading}>Connect your phone</Text>
         <Text style={styles.sub}>
-          Enter the Tailscale IP of the machine running{'\n'}
-          <Text style={styles.code}>aauth daemon</Text>
+          This pairs your phone with the A-Auth daemon running on your computer.
+          Once paired, agent access requests will buzz your phone for approval.
         </Text>
 
-        <Text style={styles.label}>Tailscale IP</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="100.x.x.x"
-          placeholderTextColor="#444"
-          value={ip}
-          onChangeText={setIp}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="decimal-pad"
-          returnKeyType="done"
-          onSubmitEditing={handlePair}
-        />
+        {/* Step 1 */}
+        <View style={styles.stepCard}>
+          <Text style={styles.stepNum}>Step 1 — Start the daemon</Text>
+          <Text style={styles.stepBody}>
+            On your computer, run:
+          </Text>
+          <View style={styles.codeBlock}>
+            <Text style={styles.code}>pip install aauth</Text>
+            <Text style={styles.code}>aauth daemon</Text>
+          </View>
+          <Text style={styles.stepNote}>
+            The daemon listens on port 7437 and waits for agent requests.
+          </Text>
+        </View>
 
-        {error && <Text style={styles.error}>{error}</Text>}
+        {/* Step 2 */}
+        <View style={styles.stepCard}>
+          <Text style={styles.stepNum}>Step 2 — Enter your Tailscale IP</Text>
+          <Text style={styles.stepBody}>
+            Find it by running <Text style={styles.inlineCode}>tailscale ip -4</Text> on your computer.
+            It looks like <Text style={styles.inlineCode}>100.x.x.x</Text>
+          </Text>
+          <TextInput
+            style={[styles.input, error ? styles.inputError : null]}
+            placeholder="100.x.x.x"
+            placeholderTextColor="#333"
+            value={ip}
+            onChangeText={(t) => { setIp(t); setError(null); }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="decimal-pad"
+            returnKeyType="done"
+            onSubmitEditing={handlePair}
+          />
+          {error && (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>{error}</Text>
+            </View>
+          )}
+        </View>
 
         <TouchableOpacity
           style={[styles.btn, loading && styles.btnDisabled]}
@@ -100,39 +123,71 @@ export default function PairScreen() {
           disabled={loading}
         >
           {loading
-            ? <ActivityIndicator color="#fff" />
-            : <Text style={styles.btnText}>Pair →</Text>
+            ? <><ActivityIndicator color="#fff" style={{ marginRight: 10 }} /><Text style={styles.btnText}>{statusLabel}</Text></>
+            : <Text style={styles.btnText}>{statusLabel}</Text>
           }
         </TouchableOpacity>
 
-        <Text style={styles.hint}>
-          Your Tailscale IP is shown by{'\n'}
-          <Text style={styles.code}>tailscale ip -4</Text>
-        </Text>
-      </View>
+        {!permissionGranted && (
+          <View style={styles.notifWarning}>
+            <Text style={styles.notifWarningText}>
+              ⚠️  Notifications are disabled. You won't get push alerts for agent requests — enable them in Settings for the best experience.
+            </Text>
+          </View>
+        )}
+
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0a0a0a' },
-  inner: { flex: 1, padding: 32, justifyContent: 'center' },
-  heading: { color: '#fff', fontSize: 24, fontWeight: '800', marginBottom: 8 },
-  sub: { color: '#888', fontSize: 15, marginBottom: 32, lineHeight: 22 },
-  label: { color: '#666', fontSize: 12, fontWeight: '700', letterSpacing: 1.2, marginBottom: 8 },
+  inner: { padding: 24, paddingTop: 12, paddingBottom: 40 },
+
+  heading: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
+  sub: { color: '#666', fontSize: 15, lineHeight: 22, marginBottom: 24 },
+
+  stepCard: {
+    backgroundColor: '#111', borderRadius: 14,
+    padding: 18, marginBottom: 16,
+    borderWidth: 1, borderColor: '#1e1e1e',
+  },
+  stepNum: { color: '#0ea5e9', fontSize: 13, fontWeight: '700', marginBottom: 8, letterSpacing: 0.3 },
+  stepBody: { color: '#aaa', fontSize: 14, lineHeight: 20, marginBottom: 10 },
+  stepNote: { color: '#555', fontSize: 13, lineHeight: 18, marginTop: 8 },
+  codeBlock: {
+    backgroundColor: '#0a0a0a', borderRadius: 8,
+    padding: 12, borderWidth: 1, borderColor: '#1a1a1a',
+  },
+  code: { fontFamily: 'monospace', color: '#0ea5e9', fontSize: 13, lineHeight: 22 },
+  inlineCode: { fontFamily: 'monospace', color: '#0ea5e9', fontSize: 13 },
+
   input: {
-    backgroundColor: '#1a1a1a', borderRadius: 12,
-    paddingVertical: 14, paddingHorizontal: 16,
-    color: '#fff', fontSize: 18, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    marginBottom: 16, borderWidth: 1, borderColor: '#2a2a2a',
+    backgroundColor: '#0a0a0a', borderRadius: 10,
+    paddingVertical: 14, paddingHorizontal: 14,
+    color: '#fff', fontSize: 18, fontFamily: 'monospace',
+    marginTop: 4, borderWidth: 1, borderColor: '#2a2a2a',
   },
-  error: { color: '#f87171', fontSize: 14, marginBottom: 16, lineHeight: 20 },
+  inputError: { borderColor: '#f87171' },
+
+  errorBox: {
+    marginTop: 12, backgroundColor: '#1a0808',
+    borderRadius: 10, padding: 14, borderWidth: 1, borderColor: '#3f1515',
+  },
+  errorText: { color: '#f87171', fontSize: 13, lineHeight: 20 },
+
   btn: {
-    backgroundColor: '#0ea5e9', borderRadius: 12,
-    paddingVertical: 16, alignItems: 'center', marginBottom: 24,
+    backgroundColor: '#0ea5e9', borderRadius: 14,
+    paddingVertical: 16, alignItems: 'center', justifyContent: 'center',
+    flexDirection: 'row', marginTop: 8,
   },
-  btnDisabled: { opacity: 0.5 },
+  btnDisabled: { opacity: 0.6 },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  hint: { color: '#444', fontSize: 13, textAlign: 'center', lineHeight: 20 },
-  code: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', color: '#666' },
+
+  notifWarning: {
+    marginTop: 16, backgroundColor: '#1a1400',
+    borderRadius: 10, padding: 14, borderWidth: 1, borderColor: '#3d3000',
+  },
+  notifWarningText: { color: '#facc15', fontSize: 13, lineHeight: 19 },
 });
