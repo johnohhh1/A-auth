@@ -1,5 +1,36 @@
 # TODOS
 
+## What's shipped (v0.1 — approval control plane)
+- Daemon: ThreadingHTTPServer, token lifecycle, SQLite registry, activity log
+- SDK: zero-dependency Python client, PermissionChain context manager
+- CLI: daemon, register, revoke, status, activity
+- Mobile app: push notifications, biometric gate, Tailscale pairing, approval screen
+- CI + release workflow (PyPI trusted publishing ready, needs manual trigger)
+
+---
+
+## P1 — Credential proxy (data plane) — the product gap
+
+Right now A-Auth mints *approval tokens* — proof that a human approved a request.
+The daemon doesn't hold real credentials and doesn't proxy API calls.
+The agent still needs to know the actual OAuth token / API key to use it.
+
+**What needs to be built:**
+- `aauth/vault/` — encrypted credential store on the daemon
+- Per-service adapters (Gmail, GitHub, Stripe, etc.)
+- Proxy endpoint: agent presents A-Auth token → daemon makes the downstream
+  API call → returns result → agent never sees the raw credential
+
+This is what makes "your phone is the vault" true at the data layer, not just
+the approval layer. Until this ships, A-Auth is the control plane only.
+
+**Also:** SQLCipher for the registry once it holds real secrets (currently plain sqlite3,
+fine for tokens, not fine for OAuth keys).
+
+---
+
+## P2 — Next sprint (post app + PyPI)
+
 ## SDK / CLI
 
 ### Extract shared HTTP helper before MCP server (Sprint 2)
@@ -34,3 +65,9 @@
 
 ## Completed
 
+- ThreadingHTTPServer + _approval_lock (concurrent request serialization)
+- select.select stdin timeout (replaced zombie-thread _timed_input)
+- Revocation failures raise + warn
+- Mobile approval path (push → Tailscale callback → threading.Event)
+- Biometric gate on approval screen (expo-local-authentication)
+- Full Expo app: pairing, home, approval screens with onboarding

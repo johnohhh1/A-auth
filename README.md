@@ -1,19 +1,32 @@
 # A-Auth
 
-**Zero-trust credential proxy for AI agents. Your phone is the vault — agents never see your keys.**
+**Zero-trust approval for AI agents. Your phone is the vault.**
 
-Every time an AI agent needs to access Gmail, Slack, or any service, it asks A-Auth for permission. You get a notification on your terminal (and desktop). You approve or deny. The agent gets a short-lived token. Your actual credentials never touch the agent.
+Every time an AI agent needs to access GitHub, Gmail, Stripe, or any service, it
+asks A-Auth for permission. Your **phone buzzes**. You review the request, confirm
+with your fingerprint, and approve or deny. The agent gets a short-lived token — or
+gets blocked. Your actual credentials never touch the agent.
 
 ```
-Agent          A-Auth Daemon       You
-  |                  |               |
-  |-- POST /request ->|               |
-  |                  |-- "allow?" -->|
-  |                  |<-- "yes" -----|
-  |<-- token --------|               |
-  |                  |               |
-  | (uses token, not your password)  |
+Agent             A-Auth Daemon           Your Phone
+  |                    |                      |
+  |-- POST /request -->|                      |
+  |                    |-- push notification ->|
+  |                    |                      | (biometric gate)
+  |                    |<-- approve/deny ------|
+  |<-- token ----------|                      |
+  |                    |                      |
+  | (uses token, not your password)
 ```
+
+The approval callback travels directly over **Tailscale** — your private mesh.
+Expo's push service carries only the notification. No cloud middleman touches
+the auth decision.
+
+> **v0.1 scope:** A-Auth is currently the *approval control plane* — it mints
+> short-lived tokens that prove a human approved a request. The *credential proxy
+> data plane* (where the daemon actually holds your OAuth tokens and proxies API
+> calls) is the next chapter. See [TODOS.md](TODOS.md).
 
 ## Install
 
@@ -25,19 +38,29 @@ Requires Python 3.11+. No external dependencies.
 
 ## Quickstart
 
-**1. Start the daemon** (leave this running in a terminal):
+**1. Install the phone app**
+
+Download A-Auth from the [releases page](https://github.com/johnohhh1/A-auth/releases)
+and install it on your Android phone.
+
+**2. Start the daemon** (leave this running):
 
 ```bash
 aauth daemon
 ```
 
-**2. Register your agent:**
+**3. Pair your phone**
+
+Open A-Auth on your phone → tap "Pair with your computer" → enter your Tailscale IP
+(run `tailscale ip -4` on your computer to find it).
+
+**4. Register your agent:**
 
 ```bash
 aauth register my-agent "My AI Assistant"
 ```
 
-**3. Use the SDK in your agent:**
+**5. Use the SDK in your agent:**
 
 ```python
 from aauth import AAuth
@@ -46,8 +69,8 @@ aa = AAuth(agent_id="my-agent")
 
 # One-shot: approve this specific request
 token = aa.request("gmail", "read")
-# → your terminal shows an approval prompt
-# → you type 'y'
+# → your phone buzzes
+# → you confirm with fingerprint
 # → token returned, valid for one use
 
 # Time-windowed: approve for 15 minutes
@@ -63,20 +86,26 @@ with aa.task("daily-digest") as task:
 # tokens revoked automatically on exit
 ```
 
-**4. Pass the token to your service (not your password):**
+**6. Validate the token in your service integration:**
 
 ```python
-# Your service integration validates the token before using credentials
-import requests
-resp = requests.get(
-    "https://your-service-bridge.com/gmail/messages",
-    headers={"X-AAuth-Token": token}
-)
+# Your service layer validates before using any credential
+import urllib.request, json
+
+def is_approved(token: str, service: str, action: str) -> bool:
+    req = urllib.request.Request(
+        "http://localhost:7437/validate",
+        data=json.dumps({"token": token, "service": service, "action": action}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read()).get("valid", False)
 ```
 
-## Approval prompt
+## TTY fallback
 
-When an agent requests access, you see:
+No phone? A-Auth falls back to a terminal prompt automatically:
 
 ```
 ============================================================
@@ -91,8 +120,6 @@ When an agent requests access, you see:
   Timeout: 60s
   >
 ```
-
-Type `y` to approve, `n` to deny, or a number of minutes to override the scope.
 
 ## CLI reference
 
@@ -111,7 +138,9 @@ aauth validate <token> <service> <action>
 
 ## How it works
 
-A-Auth is a local HTTP daemon (port 7437) backed by SQLite. Agents talk to it over localhost. No cloud, no external service — everything runs on your machine.
+A-Auth is a local HTTP daemon (port 7437) backed by SQLite. Agents talk to it over
+localhost. No cloud, no external service — everything runs on your machine.
+The phone connects to the daemon directly over Tailscale.
 
 Token types:
 - **one_shot** — single use, expires after first validation
@@ -120,7 +149,8 @@ Token types:
 
 ## Using A-Auth from any LLM agent
 
-See [AAUTH_SKILL.md](AAUTH_SKILL.md) for the full HTTP API reference. Any LLM can use A-Auth by making simple HTTP calls — no SDK required.
+See [AAUTH_SKILL.md](AAUTH_SKILL.md) for the full HTTP API reference. Any LLM can
+use A-Auth by making simple HTTP calls — no SDK required.
 
 ## License
 
