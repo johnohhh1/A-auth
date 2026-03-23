@@ -20,8 +20,10 @@
         "ITSAppUsesNonExemptEncryption": false
       }
     },
+    "scheme": "com.johnohhh1.aauth",
     "android": {
       "package": "com.johnohhh1.aauth",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0a0a0a",
         "foregroundImage": "./assets/adaptive-icon.png"

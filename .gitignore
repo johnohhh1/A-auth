@@ -7,3 +7,5 @@ build/
 venv/
 .pytest_cache/
 *.db
+.gstack/
+google-services.json
