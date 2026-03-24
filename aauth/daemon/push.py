@@ -42,8 +42,15 @@ def send_push(
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read())
-            # Expo returns {"data": [{"status": "ok"} or {"status": "error", ...}]}
-            ticket = result.get("data", [{}])[0]
-            return ticket.get("status") == "ok"
-    except Exception:
+            # Expo returns {"data": {...}} for single push or {"data": [...]} for batch
+            data = result.get("data", {})
+            ticket = data[0] if isinstance(data, list) else data
+            ok = ticket.get("status") == "ok"
+            if not ok:
+                print(f"\n⚠️  Push failed: {ticket}", flush=True)
+            else:
+                print(f"\n📬 Push sent to {expo_token[:20]}...", flush=True)
+            return ok
+    except Exception as e:
+        print(f"\n❌ Push error: {e}", flush=True)
         return False

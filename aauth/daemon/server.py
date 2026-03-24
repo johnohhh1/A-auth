@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse, parse_qs
 
 from aauth.db import registry
+from aauth.db.registry import save_phone, load_phone, clear_phone
 from aauth.daemon.notify import prompt_approval
 from aauth.daemon.push import send_push
 
@@ -20,7 +21,7 @@ _approval_lock = threading.Lock()
 
 # Phone registration: one phone per daemon instance (v0.1).
 # { "expo_token": str, "device_name": str }
-_phone: dict | None = None
+_phone: dict | None = load_phone()  # persist across restarts
 _phone_lock = threading.Lock()
 
 # Pending mobile approvals: request_id -> {"event": Event, "approved": bool | None}
@@ -285,6 +286,7 @@ class AAuthHandler(BaseHTTPRequestHandler):
 
         with _phone_lock:
             _phone = {"expo_token": expo_token, "device_name": device_name}
+        save_phone(expo_token, device_name)
 
         print(f"\n📱 Phone paired: {device_name}", flush=True)
         self._json(200, {"paired": True, "device_name": device_name})
@@ -294,6 +296,7 @@ class AAuthHandler(BaseHTTPRequestHandler):
         with _phone_lock:
             name = _phone["device_name"] if _phone else None
             _phone = None
+        clear_phone()
         if name:
             print(f"\n📱 Phone unpaired: {name}", flush=True)
         self._json(200, {"unpaired": True})

@@ -202,6 +202,43 @@ def get_active_tokens(agent_id: str) -> list[Token]:
     return [Token(**{**dict(r), "used": bool(r["used"])}) for r in rows]
 
 
+# --- Phone registration ---
+
+def save_phone(expo_token: str, device_name: str) -> None:
+    with _connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS phone (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                expo_token  TEXT NOT NULL,
+                device_name TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT OR REPLACE INTO phone (id, expo_token, device_name) VALUES (1, ?, ?)",
+            (expo_token, device_name)
+        )
+
+
+def load_phone() -> dict | None:
+    with _connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS phone (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                expo_token  TEXT NOT NULL,
+                device_name TEXT NOT NULL
+            )
+        """)
+        row = conn.execute("SELECT expo_token, device_name FROM phone WHERE id = 1").fetchone()
+    if not row:
+        return None
+    return {"expo_token": row["expo_token"], "device_name": row["device_name"]}
+
+
+def clear_phone() -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM phone WHERE id = 1")
+
+
 # --- Activity log ---
 
 def log_activity(agent_id: str, service: str, action: str,
